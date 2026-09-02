@@ -41,10 +41,7 @@ enum VolumeLister {
         return result.sorted { $0.totalCapacity > $1.totalCapacity }
     }
 
-    /// Looks up the APFS container this volume belongs to. Returns `nil` for
-    /// non-APFS volumes (exFAT, network mounts, ...), which have no container.
     private static func containerReference(for url: URL) -> String? {
-        guard let plist = DiskutilRunner.plist(["info", "-plist", url.path]) else { return nil }
-        return plist["APFSContainerReference"] as? String
+        APFSContainer.reference(forMountPoint: url.path)
     }
 }
