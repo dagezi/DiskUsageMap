@@ -7,34 +7,31 @@ enum ScanError: Error {
 /// Recursively walks a directory tree and builds an `FSNode` tree with
 /// on-disk allocated sizes. Mirrors what `du`/`df` report, not "logical" file size.
 ///
-/// Boundary detection is deliberately NOT based on `stat(2)`'s `st_dev`: Apple
-/// flattens that value across firmlinks so the System+Data union looks like one
-/// device, which is right for tools like `find -xdev` but wrong here — it means
-/// two volumes in the *same* APFS container (e.g. the boot volume and a sibling
-/// user-created volume) can report different `st_dev` even though both draw down
-/// the same shared free-space pool we're trying to visualize. Instead we check,
-/// in two tiers: `statfs(2)` (via `MountPoint`, same non-virtualized source `df`
-/// uses) for "did we cross a real mount" (cheap, checked on every directory), and
-/// only when that fires, `diskutil` for "is it still the same APFS container"
-/// (expensive, so only paid at actual mount boundaries — rare during a walk).
+/// Scoped deliberately narrow, to fit "pick one folder, show its size fast"
+/// rather than "scan a whole volume":
+/// - Symbolic links are recorded as leaves and never followed.
+/// - Firmlinks are never explicitly "followed" either, and need no special
+///   case: a firmlinked path always resolves to a different real mount (see
+///   `MountPoint`), so the plain filesystem-boundary rule below stops at it
+///   on its own.
+/// - Any real filesystem boundary — `statfs(2)`'s mount point, NOT `stat(2)`'s
+///   `st_dev`, which Apple flattens across firmlinks (see `MountPoint.swift`)
+///   — stops the walk outright. No "same APFS container, keep going"
+///   exception: that mattered for scanning an entire volume, but here,
+///   crossing out of the folder the user picked was never wanted anyway.
+/// - Hard links are not deduplicated: each directory entry is counted as
+///   encountered, same as `du` without `-l`. There's no "should I follow
+///   this" decision to make for a hard link — it's a normal directory entry.
 final class DirectoryScanner {
     private let fileManager = FileManager.default
     private var rootMountPoint: String?
-    private var rootContainerID: String?
-    private var containerCache: [String: String?] = [:]
     private var isCancelled = false
 
-    /// Paths that lead to device nodes, virtual memory internals, or raw
-    /// re-mount points that duplicate content already reachable via firmlinks
-    /// (e.g. `/System/Volumes/Data` mirrors `/Users`) — walking them would
-    /// double-count. Not useful to walk regardless of container membership.
-    private static let skipPaths: Set<String> = [
-        "/dev",
-        "/System/Volumes",
-        "/private/var/vm",
-        "/cores",
-        "/.vol"
-    ]
+    /// `/.vol` is a legacy BSD inode-addressable pseudo-directory. Unlike every
+    /// other special path, it sits on the *same* mount as its surroundings, so
+    /// the filesystem-boundary rule below won't skip it on its own, and
+    /// enumerating it is unbounded and best avoided. Hard-skip it defensively.
+    private static let skipPaths: Set<String> = ["/.vol"]
 
     func cancel() {
         isCancelled = true
@@ -42,20 +39,9 @@ final class DirectoryScanner {
 
     func scan(rootURL: URL, progress: ((Int, String) -> Void)? = nil) throws -> FSNode {
         isCancelled = false
-        containerCache = [:]
         rootMountPoint = MountPoint.resolve(rootURL.path)
-        rootContainerID = rootMountPoint.flatMap { containerReference(forMountPoint: $0) }
         var count = 0
         return try scanEntry(url: rootURL, progress: progress, count: &count)
-    }
-
-    private func containerReference(forMountPoint mountPoint: String) -> String? {
-        if let cached = containerCache[mountPoint] {
-            return cached
-        }
-        let ref = APFSContainer.reference(forMountPoint: mountPoint)
-        containerCache[mountPoint] = ref
-        return ref
     }
 
     private func scanEntry(url: URL, progress: ((Int, String) -> Void)?, count: inout Int) throws -> FSNode {
@@ -88,13 +74,8 @@ final class DirectoryScanner {
             return FSNode(url: url, name: name, isDirectory: false, size: size)
         }
 
-        if let rootMountPoint, let currentMountPoint = MountPoint.resolve(path), currentMountPoint != rootMountPoint {
-            let currentContainerID = containerReference(forMountPoint: currentMountPoint)
-            if currentContainerID == nil || currentContainerID != rootContainerID {
-                return FSNode(url: url, name: name, isDirectory: true, size: 0, errorDescription: "別コンテナ(未スキャン): \(currentMountPoint)")
-            }
-            // Different volume, but same APFS container: still pressures the
-            // same free-space pool as the scan root, so keep descending.
+        if let rootMountPoint, MountPoint.resolve(path) != rootMountPoint {
+            return FSNode(url: url, name: name, isDirectory: true, size: 0, errorDescription: "別ファイルシステム(未スキャン)")
         }
 
         var children: [FSNode] = []

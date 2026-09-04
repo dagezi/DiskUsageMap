@@ -40,7 +40,7 @@ struct VolumeListView: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            viewModel.startScan(url: volume.url)
+                            pickFolder(startingAt: volume.url)
                         }
                     }
                 } header: {
@@ -51,7 +51,7 @@ struct VolumeListView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    pickFolder()
+                    pickFolder(startingAt: FileManager.default.homeDirectoryForCurrentUser)
                 } label: {
                     Label("フォルダを選択…", systemImage: "folder.badge.plus")
                 }
@@ -86,12 +86,20 @@ struct VolumeListView: View {
         }
     }
 
-    private func pickFolder() {
+    /// Opens a folder picker rooted at `startingURL`. Volumes are never scanned
+    /// whole anymore — the scanner stops dead at the first filesystem boundary
+    /// it meets (see DirectoryScanner), and a volume's own root is almost
+    /// always across one immediately (e.g. the boot volume's `/` hands off to
+    /// the Data volume at the very first firmlinked path like `/Users`). So a
+    /// volume row's job is just to jump the picker to the right starting point,
+    /// leaving the actual folder choice — which won't cross out of itself — to
+    /// the user.
+    private func pickFolder(startingAt startingURL: URL) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        panel.directoryURL = startingURL
         if panel.runModal() == .OK, let url = panel.url {
             viewModel.startScan(url: url)
         }
