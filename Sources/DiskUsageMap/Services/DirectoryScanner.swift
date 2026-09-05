@@ -4,100 +4,108 @@ enum ScanError: Error {
     case cancelled
 }
 
-/// Recursively walks a directory tree and builds an `FSNode` tree with
-/// on-disk allocated sizes. Mirrors what `du`/`df` report, not "logical" file size.
+/// Recursively fills in a `FileTreeNode` subtree in place with on-disk
+/// allocated sizes (mirrors `du`/`df`, not "logical" file size), mutating the
+/// same nodes the UI displays — a row's result appears in that row because
+/// it IS that row's state, not a separate result handed back.
 ///
-/// Scoped deliberately narrow, to fit "pick one folder, show its size fast"
-/// rather than "scan a whole volume":
-/// - Symbolic links are recorded as leaves and never followed.
-/// - Firmlinks are never explicitly "followed" either, and need no special
-///   case: a firmlinked path always resolves to a different real mount (see
-///   `MountPoint`), so the plain filesystem-boundary rule below stops at it
-///   on its own.
-/// - Any real filesystem boundary — `statfs(2)`'s mount point, NOT `stat(2)`'s
-///   `st_dev`, which Apple flattens across firmlinks (see `MountPoint.swift`)
-///   — stops the walk outright. No "same APFS container, keep going"
-///   exception: that mattered for scanning an entire volume, but here,
-///   crossing out of the folder the user picked was never wanted anyway.
-/// - Hard links are not deduplicated: each directory entry is counted as
-///   encountered, same as `du` without `-l`. There's no "should I follow
-///   this" decision to make for a hard link — it's a normal directory entry.
+/// Runs on the main actor deliberately: the individual syscalls (`stat`,
+/// `contentsOfDirectory`) are fast, and periodic `Task.yield()` keeps the UI
+/// responsive without needing to hop `@Published` mutations across actors for
+/// every node — see the yield in `scanEntry`.
+///
+/// A node already in `.scanned` state is left untouched instead of re-walked:
+/// scanning a directory whose children were already scanned individually (or
+/// scanning it a second time) reuses that cached result. This is what makes
+/// "scan the parent" cheap once its children are already known.
+///
+/// Boundary handling, unchanged from before:
+/// - Symbolic links are never followed (`DirectoryBrowser` marks them as
+///   non-directory leaves up front, so they never reach the recursion below).
+/// - Firmlinks need no special case: a firmlinked path always resolves to a
+///   different real mount (see `MountPoint`), so the plain boundary check
+///   below stops at it on its own.
+/// - Hard links are not deduplicated — counted as encountered, like `du`
+///   without `-l`.
+@MainActor
 final class DirectoryScanner {
-    private let fileManager = FileManager.default
     private var rootMountPoint: String?
     private var isCancelled = false
+    private var visitedCount = 0
 
-    /// `/.vol` is a legacy BSD inode-addressable pseudo-directory. Unlike every
-    /// other special path, it sits on the *same* mount as its surroundings, so
-    /// the filesystem-boundary rule below won't skip it on its own, and
-    /// enumerating it is unbounded and best avoided. Hard-skip it defensively.
+    /// `/.vol` is a legacy BSD inode-addressable pseudo-directory. It sits on
+    /// the *same* mount as its surroundings, so the boundary check below won't
+    /// skip it on its own, and enumerating it is unbounded — hard-skip it.
     private static let skipPaths: Set<String> = ["/.vol"]
 
     func cancel() {
         isCancelled = true
     }
 
-    func scan(rootURL: URL, progress: ((Int, String) -> Void)? = nil) throws -> FSNode {
+    func scan(_ node: FileTreeNode) async throws {
         isCancelled = false
-        rootMountPoint = MountPoint.resolve(rootURL.path)
-        var count = 0
-        return try scanEntry(url: rootURL, progress: progress, count: &count)
+        visitedCount = 0
+        rootMountPoint = MountPoint.resolve(node.url.path)
+        try await scanEntry(node)
     }
 
-    private func scanEntry(url: URL, progress: ((Int, String) -> Void)?, count: inout Int) throws -> FSNode {
+    private func scanEntry(_ node: FileTreeNode) async throws {
         if isCancelled { throw ScanError.cancelled }
 
-        let path = url.path
-        let name = url.lastPathComponent
+        if case .scanned = node.scanState {
+            return // cache hit — reuse as-is, don't re-walk
+        }
+
+        visitedCount += 1
+        if visitedCount % 300 == 0 {
+            await Task.yield()
+            if isCancelled { throw ScanError.cancelled }
+        }
+
+        // Files/symlinks are always pre-scanned by DirectoryBrowser before they
+        // can reach here (see the .scanned check above); this is just a guard
+        // against a stray non-directory node with no cached size yet.
+        guard node.isDirectory else {
+            if case .scanned = node.scanState {} else {
+                node.scanState = .scanned(size: 0)
+            }
+            return
+        }
+
+        let path = node.url.path
 
         if Self.skipPaths.contains(path) {
-            return FSNode(url: url, name: name, isDirectory: true, size: 0, errorDescription: "スキップ対象のパス")
-        }
-
-        count += 1
-        if count % 500 == 0 {
-            progress?(count, path)
-        }
-
-        let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
-        let values = try? url.resourceValues(forKeys: resourceKeys)
-        let isSymlink = values?.isSymbolicLink ?? false
-        let isDirectory = (values?.isDirectory ?? false) && !isSymlink
-
-        if isSymlink {
-            let size = Int64(values?.fileAllocatedSize ?? 0)
-            return FSNode(url: url, name: name, isDirectory: false, size: size)
-        }
-
-        if !isDirectory {
-            let size = Int64(values?.totalFileAllocatedSize ?? values?.fileAllocatedSize ?? 0)
-            return FSNode(url: url, name: name, isDirectory: false, size: size)
+            node.scanState = .error("スキップ対象のパス")
+            return
         }
 
         if let rootMountPoint, MountPoint.resolve(path) != rootMountPoint {
-            return FSNode(url: url, name: name, isDirectory: true, size: 0, errorDescription: "別ファイルシステム(未スキャン)")
+            node.scanState = .error("別ファイルシステム(未スキャン)")
+            return
         }
 
-        var children: [FSNode] = []
-        do {
-            let entries = try fileManager.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: Array(resourceKeys),
-                options: []
-            )
-            children.reserveCapacity(entries.count)
-            for entry in entries {
-                let child = try scanEntry(url: entry, progress: progress, count: &count)
-                children.append(child)
+        node.scanState = .scanning(count: visitedCount)
+
+        let children: [FileTreeNode]
+        if let existing = node.children {
+            children = existing
+        } else {
+            do {
+                children = try DirectoryBrowser.list(node.url)
+            } catch {
+                node.scanState = .error("アクセス不可: \(error.localizedDescription)")
+                return
             }
-        } catch let error as ScanError {
-            throw error
-        } catch {
-            return FSNode(url: url, name: name, isDirectory: true, size: 0, errorDescription: "アクセス不可: \(error.localizedDescription)")
+            node.children = children
         }
 
-        let totalSize = children.reduce(Int64(0)) { $0 + $1.size }
-        let sortedChildren = children.sorted { $0.size > $1.size }
-        return FSNode(url: url, name: name, isDirectory: true, size: totalSize, children: sortedChildren)
+        var total: Int64 = 0
+        for child in children {
+            try await scanEntry(child)
+            total += child.scanState.size
+        }
+
+        node.children = children.sorted { $0.scanState.size > $1.scanState.size }
+        node.scanState = .scanned(size: total)
     }
 }
