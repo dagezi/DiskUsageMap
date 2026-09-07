@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 final class FileTreeViewModel: ObservableObject {
     @Published private(set) var rootNode: FileTreeNode
+    @Published private(set) var containers: [ContainerInfo] = []
 
     private var scanners: [String: DirectoryScanner] = [:]
 
@@ -10,6 +11,13 @@ final class FileTreeViewModel: ObservableObject {
         let rootURL = URL(fileURLWithPath: "/")
         let (mountPoint, volumeName) = VolumeLabelResolver.resolve(path: "/", parentMountPoint: nil, parentLabel: nil)
         rootNode = FileTreeNode(url: rootURL, isDirectory: true, mountPoint: mountPoint, volumeName: volumeName, name: "/")
+        refreshContainers()
+    }
+
+    func refreshContainers() {
+        Task {
+            containers = ContainerLister.load()
+        }
     }
 
     func scan(_ node: FileTreeNode) {
