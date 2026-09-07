@@ -91,7 +91,7 @@ final class DirectoryScanner {
             children = existing
         } else {
             do {
-                children = try DirectoryBrowser.list(node.url)
+                children = try DirectoryBrowser.list(node.url, parentMountPoint: node.mountPoint, parentVolumeName: node.volumeName)
             } catch {
                 node.scanState = .error("アクセス不可: \(error.localizedDescription)")
                 return

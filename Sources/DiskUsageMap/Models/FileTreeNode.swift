@@ -22,14 +22,22 @@ final class FileTreeNode: ObservableObject, Identifiable {
     let url: URL
     let name: String
     let isDirectory: Bool
+    /// This node's real mount point (see MountPoint — not virtualized like
+    /// `stat`'s `st_dev`) and the volume's real display name (see APFSContainer
+    /// — not unified across a System/Data group like FileManager's). Resolved
+    /// once at creation time (see VolumeLabelResolver) and shown next to the row.
+    let mountPoint: String
+    let volumeName: String
     /// `nil` until the directory has been browsed (disclosure expanded) or scanned.
     @Published var children: [FileTreeNode]?
     @Published var scanState: ScanState = .notScanned
 
-    init(url: URL, isDirectory: Bool, name: String? = nil) {
+    init(url: URL, isDirectory: Bool, mountPoint: String, volumeName: String, name: String? = nil) {
         self.id = url.path
         self.url = url
         self.isDirectory = isDirectory
+        self.mountPoint = mountPoint
+        self.volumeName = volumeName
         let lastComponent = url.lastPathComponent
         self.name = name ?? (lastComponent.isEmpty ? url.path : lastComponent)
     }

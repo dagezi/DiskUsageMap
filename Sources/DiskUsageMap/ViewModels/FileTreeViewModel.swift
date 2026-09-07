@@ -1,33 +1,15 @@
 import Foundation
 
-/// One top-level row: a mounted volume, plus the APFS container metadata
-/// needed for the section header/usage bar (see FileTreeRootRowView).
-struct VolumeRoot: Identifiable {
-    let id: String
-    let node: FileTreeNode
-    let volume: VolumeInfo
-}
-
 @MainActor
 final class FileTreeViewModel: ObservableObject {
-    @Published var volumeRoots: [VolumeRoot] = []
-    @Published var containers: [String: ContainerInfo] = [:]
+    @Published private(set) var rootNode: FileTreeNode
 
     private var scanners: [String: DirectoryScanner] = [:]
 
-    func refreshVolumes() {
-        Task {
-            let containerData = ContainerLister.load()
-            let volumes = VolumeLister.listVolumes(volumeUsage: containerData.volumeUsage)
-            containers = containerData.containers
-            volumeRoots = volumes.map { volume in
-                VolumeRoot(
-                    id: volume.id,
-                    node: FileTreeNode(url: volume.url, isDirectory: true, name: volume.name),
-                    volume: volume
-                )
-            }
-        }
+    init() {
+        let rootURL = URL(fileURLWithPath: "/")
+        let (mountPoint, volumeName) = VolumeLabelResolver.resolve(path: "/", parentMountPoint: nil, parentLabel: nil)
+        rootNode = FileTreeNode(url: rootURL, isDirectory: true, mountPoint: mountPoint, volumeName: volumeName, name: "/")
     }
 
     func scan(_ node: FileTreeNode) {

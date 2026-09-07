@@ -53,7 +53,7 @@ struct FileTreeRowView: View {
         browseError = nil
         Task {
             do {
-                node.children = try DirectoryBrowser.list(node.url)
+                node.children = try DirectoryBrowser.list(node.url, parentMountPoint: node.mountPoint, parentVolumeName: node.volumeName)
             } catch {
                 browseError = "アクセス不可: \(error.localizedDescription)"
             }
@@ -88,6 +88,14 @@ struct FileTreeRowView: View {
             }
             .buttonStyle(.plain)
             .disabled(!node.isDirectory)
+
+            Text(node.volumeName)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(.quaternary, in: Capsule())
 
             Spacer(minLength: 8)
             statusView

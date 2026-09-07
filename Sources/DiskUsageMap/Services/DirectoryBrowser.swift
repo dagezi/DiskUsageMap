@@ -4,7 +4,12 @@ import Foundation
 /// subdirectories. This is what backs expanding a disclosure triangle: cheap
 /// enough to run on every expand without the user asking for a size.
 enum DirectoryBrowser {
-    static func list(_ url: URL) throws -> [FileTreeNode] {
+    /// - Parameters:
+    ///   - parentMountPoint: the mount point of `url` itself, already resolved
+    ///     for its own node (see VolumeLabelResolver — each child's volume
+    ///     label is only re-resolved via `diskutil` if its own mount differs).
+    ///   - parentVolumeName: the display name that goes with `parentMountPoint`.
+    static func list(_ url: URL, parentMountPoint: String, parentVolumeName: String) throws -> [FileTreeNode] {
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey,
             .isSymbolicLinkKey,
@@ -22,7 +27,14 @@ enum DirectoryBrowser {
                 let values = try? entry.resourceValues(forKeys: keys)
                 let isSymlink = values?.isSymbolicLink ?? false
                 let isDirectory = (values?.isDirectory ?? false) && !isSymlink
-                let node = FileTreeNode(url: entry, isDirectory: isDirectory)
+
+                let (mountPoint, volumeName) = VolumeLabelResolver.resolve(
+                    path: entry.path,
+                    parentMountPoint: parentMountPoint,
+                    parentLabel: parentVolumeName
+                )
+
+                let node = FileTreeNode(url: entry, isDirectory: isDirectory, mountPoint: mountPoint, volumeName: volumeName)
                 if !isDirectory {
                     // A file's (or symlink's) own size is one stat call, not a
                     // walk — cheap enough to show immediately on browse, unlike
