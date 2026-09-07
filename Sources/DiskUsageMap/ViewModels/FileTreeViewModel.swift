@@ -4,6 +4,7 @@ import Foundation
 final class FileTreeViewModel: ObservableObject {
     @Published private(set) var rootNode: FileTreeNode
     @Published private(set) var containers: [ContainerInfo] = []
+    @Published var sortMode: SortMode = .size
 
     private var scanners: [String: DirectoryScanner] = [:]
 

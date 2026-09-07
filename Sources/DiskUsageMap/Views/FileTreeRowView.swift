@@ -21,8 +21,8 @@ struct FileTreeRowView: View {
             rowLabel
 
             if isExpanded {
-                if let children = node.children {
-                    ForEach(children) { child in
+                if node.children != nil {
+                    ForEach(sortedChildren) { child in
                         FileTreeRowView(node: child)
                             .padding(.leading, 16)
                     }
@@ -37,6 +37,19 @@ struct FileTreeRowView: View {
                         .padding(.leading, 20)
                 }
             }
+        }
+    }
+
+    /// Sorted on demand rather than stored: switching `viewModel.sortMode` (an
+    /// `@EnvironmentObject` change) re-renders every row in the tree, so this
+    /// just needs to reflect the current mode — no separate re-sort trigger needed.
+    private var sortedChildren: [FileTreeNode] {
+        let children = node.children ?? []
+        switch viewModel.sortMode {
+        case .name:
+            return children.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .size:
+            return children.sorted { $0.scanState.size > $1.scanState.size }
         }
     }
 

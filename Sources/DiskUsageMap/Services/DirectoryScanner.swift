@@ -105,7 +105,10 @@ final class DirectoryScanner {
             total += child.scanState.size
         }
 
-        node.children = children.sorted { $0.scanState.size > $1.scanState.size }
+        // Sorting is a display concern (see FileTreeRowView.sortedChildren) —
+        // just reassign the same array so this row's view re-renders and picks
+        // up every child's now-final size.
+        node.children = children
         node.scanState = .scanned(size: total)
     }
 }

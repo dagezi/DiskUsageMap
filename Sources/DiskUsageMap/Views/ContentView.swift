@@ -5,7 +5,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ContainerStatusBar(containers: viewModel.containers)
+            ContainerStatusBar(containers: viewModel.containers, sortMode: $viewModel.sortMode)
             Divider()
             ScrollView {
                 FileTreeRowView(node: viewModel.rootNode)
